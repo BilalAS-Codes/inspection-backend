@@ -1,0 +1,1386 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Invertio Inspection Management System API",
+    "version": "1.0.0",
+    "description": "Production-grade RESTful API for Invertio Inspection Management System (Musadaqah Business Solution). Provides complete end-to-end lifecycle coverage from Lead to Proposal, Digital Acceptance, Invoicing, Gate-Pass Engineer Validation, Inspections, and QR-verifiable Certification."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4000",
+      "description": "Local API Server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "invertio_session",
+        "description": "HTTP-only secure JWT session cookie set upon successful authentication."
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Standard Bearer JWT authentication header for cross-origin and network IP client support."
+      }
+    },
+    "schemas": {
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message", "details"],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": ["UNAUTHENTICATED", "FORBIDDEN", "NOT_FOUND", "VALIDATION_FAILED", "CONFLICT", "UNPROCESSABLE", "RATE_LIMITED", "INTERNAL"],
+                "example": "VALIDATION_FAILED"
+              },
+              "message": {
+                "type": "string",
+                "example": "Request data validation failed."
+              },
+              "details": {
+                "type": "object",
+                "description": "Structured details such as fieldErrors or blocking documents",
+                "example": { "clientName": "Client name is required" }
+              }
+            }
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "tenantId": { "type": "string", "format": "uuid" },
+          "email": { "type": "string", "format": "email" },
+          "name": { "type": "string" },
+          "role": { "type": "string", "enum": ["admin", "sales", "engineer", "finance"] }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/auth/login": {
+      "post": {
+        "summary": "User authentication",
+        "description": "Authenticates user credentials using bcrypt and issues an HTTP-only secure cookie.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email", "password"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "description": "(Compulsory) Registered user email", "example": "admin@demo.local" },
+                  "password": { "type": "string", "description": "(Compulsory) Plaintext password", "example": "Demo@123" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successfully authenticated with session cookie set and JWT bearer token returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["user", "token"],
+                  "properties": {
+                    "user": { "$ref": "#/components/schemas/User" },
+                    "token": { "type": "string", "description": "Signed compact JWT session token for Bearer authorization" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/schemas/ErrorEnvelope" },
+          "403": { "$ref": "#/components/schemas/ErrorEnvelope" }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "User logout",
+        "description": "Clears the active session cookie.",
+        "responses": {
+          "200": { "description": "Successfully logged out" }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "summary": "Current authenticated user profile",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "Authenticated user object" },
+          "401": { "$ref": "#/components/schemas/ErrorEnvelope" }
+        }
+      }
+    },
+    "/api/leads": {
+      "get": {
+        "summary": "List tenant leads",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["new", "contacted", "proposal_sent", "converted", "lost"] }, "description": "(Optional) Filter by status" },
+          { "name": "source", "in": "query", "required": false, "schema": { "type": "string", "enum": ["whatsapp", "email", "website", "manual"] }, "description": "(Optional) Filter by lead acquisition source" },
+          { "name": "q", "in": "query", "required": false, "schema": { "type": "string" }, "description": "(Optional) Search term for client name, email, or phone" }
+        ],
+        "responses": {
+          "200": { "description": "List of leads" }
+        }
+      },
+      "post": {
+        "summary": "Create new lead",
+        "security": [{ "cookieAuth": [] }],
+        "description": "Creates a lead with deduplication protection. Returns 409 if active lead with same email, phone, and source already exists.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["source", "clientName"],
+                "properties": {
+                  "source": { "type": "string", "enum": ["whatsapp", "email", "website", "manual"], "description": "(Compulsory) Lead channel source" },
+                  "clientName": { "type": "string", "description": "(Compulsory) Client or company name", "example": "Aramco Oilfield Services" },
+                  "contactEmail": { "type": "string", "format": "email", "description": "(Optional) Primary contact email", "example": "procurement@aramco.sa" },
+                  "contactPhone": { "type": "string", "description": "(Optional) Contact telephone number", "example": "+966501234567" },
+                  "assignedTo": { "type": "string", "format": "uuid", "description": "(Optional) User ID of assigned sales rep" },
+                  "notes": { "type": "string", "description": "(Optional) Inspection scope or client requirements" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Lead created successfully" },
+          "409": { "$ref": "#/components/schemas/ErrorEnvelope" },
+          "422": { "$ref": "#/components/schemas/ErrorEnvelope" }
+        }
+      }
+    },
+    "/api/leads/{id}/status": {
+      "patch": {
+        "summary": "Transition lead status",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "(Compulsory) Lead UUID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "enum": ["new", "contacted", "proposal_sent", "converted", "lost"], "description": "(Compulsory) Target transition status" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Status updated" },
+          "422": { "description": "Illegal status transition" }
+        }
+      }
+    },
+    "/api/leads/{id}/convert": {
+      "post": {
+        "summary": "Convert lead to commercial proposal",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "(Compulsory) Lead UUID" }
+        ],
+        "responses": {
+          "201": { "description": "Returns proposalId" }
+        }
+      }
+    },
+    "/api/proposals": {
+      "get": {
+        "summary": "List proposals",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "List of proposals" }
+        }
+      },
+      "post": {
+        "summary": "Create draft proposal",
+        "security": [{ "cookieAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["type", "variables"],
+                "properties": {
+                  "leadId": { "type": "string", "format": "uuid", "description": "(Optional) Linked lead UUID" },
+                  "type": { "type": "string", "enum": ["commercial", "technical"], "description": "(Compulsory) Proposal category" },
+                  "variables": {
+                    "type": "object",
+                    "description": "(Compulsory) Template placeholder variables. Must supply all {{var}} tags.",
+                    "required": ["client_name", "scope", "amount", "currency", "validity_days"],
+                    "properties": {
+                      "client_name": { "type": "string" },
+                      "scope": { "type": "string" },
+                      "amount": { "type": "number" },
+                      "currency": { "type": "string", "example": "SAR" },
+                      "validity_days": { "type": "integer", "example": 30 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Proposal created" },
+          "422": { "description": "Missing template variables" }
+        }
+      }
+    },
+    "/api/proposals/{id}/send": {
+      "post": {
+        "summary": "Send proposal and generate public acceptance link",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Returns clientLink and expiresAt" }
+        }
+      }
+    },
+    "/api/proposals/{id}/manual-sign": {
+      "post": {
+        "summary": "Manually sign and accept proposal to generate binding tax invoice",
+        "description": "Records manual/offline contract signature (wet ink, signed purchase order, physical acceptance) on a proposal, transitions status to 'accepted', converts linked lead, and issues a ZATCA-compliant Tax Invoice.",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" },
+            "description": "(Compulsory) Proposal UUID"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "signatoryName": {
+                    "type": "string",
+                    "description": "(Optional) Full name of client authorized signatory (e.g. 'Eng. Tariq Al-Mansoor')"
+                  },
+                  "signatoryEmail": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "(Optional) Signatory email address for invoice dispatch"
+                  },
+                  "poNumber": {
+                    "type": "string",
+                    "description": "(Optional) Client Purchase Order (PO) number or physical contract reference"
+                  },
+                  "signingMethod": {
+                    "type": "string",
+                    "enum": ["wet_signature", "purchase_order", "email_approval", "in_person"],
+                    "description": "(Optional) Verification method for physical acceptance. Defaults to 'wet_signature'."
+                  },
+                  "notes": {
+                    "type": "string",
+                    "description": "(Optional) Additional internal audit notes regarding the manual signing"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Proposal marked as accepted and Tax Invoice created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string" },
+                    "proposal": { "type": "object" },
+                    "invoiceNumber": { "type": "string" },
+                    "invoiceId": { "type": "string", "format": "uuid" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Proposal not found" },
+          "409": { "description": "Proposal is already signed/accepted" }
+        }
+      }
+    },
+    "/api/proposals/public/{token}": {
+      "get": {
+        "summary": "Public view proposal preview and PDF",
+        "description": "Public unauthenticated endpoint for clients to view proposal terms and embedded PDF.",
+        "parameters": [
+          { "name": "token", "in": "path", "required": true, "schema": { "type": "string" }, "description": "(Compulsory) 32-byte hexadecimal access token" }
+        ],
+        "responses": {
+          "200": { "description": "Proposal details and PDF URL" },
+          "404": { "description": "Not found" },
+          "410": { "description": "Expired link" }
+        }
+      }
+    },
+    "/api/proposals/public/{token}/accept": {
+      "post": {
+        "summary": "Public digital acceptance of proposal",
+        "description": "Accepts the proposal, automatically generates an Invoice (INV-XXXXXX) with 15% VAT, and transitions the lead to converted.",
+        "parameters": [
+          { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "description": "(Compulsory) Client signatory email address", "example": "client@signatory.sa" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Proposal accepted and invoice generated" },
+          "409": { "description": "Already accepted" },
+          "410": { "description": "Expired link" }
+        }
+      }
+    },
+    "/api/invoices": {
+      "get": {
+        "summary": "List invoices",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "List of invoices" }
+        }
+      }
+    },
+    "/api/invoices/{id}": {
+      "get": {
+        "summary": "Get invoice details and payment history",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Invoice details" }
+        }
+      }
+    },
+    "/api/invoices/{id}/pay": {
+      "post": {
+        "summary": "Initiate payment simulation",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Returns paymentId and redirectUrl" },
+          "409": { "description": "Invoice already paid" }
+        }
+      }
+    },
+    "/api/webhooks/mock-pay": {
+      "post": {
+        "summary": "Idempotent payment webhook",
+        "description": "Processes payment status. On success, transitions invoice to 'paid' and creates a Work Order. Idempotent on repeated calls.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status", "idempotencyKey"],
+                "properties": {
+                  "paymentId": { "type": "string", "format": "uuid", "description": "(Optional) Payment transaction ID" },
+                  "invoiceId": { "type": "string", "format": "uuid", "description": "(Optional) Target invoice ID" },
+                  "status": { "type": "string", "enum": ["succeeded", "failed"], "description": "(Compulsory) Payment outcome" },
+                  "idempotencyKey": { "type": "string", "description": "(Compulsory) Unique idempotency key" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Payment processed or idempotent duplicate recognized" }
+        }
+      }
+    },
+    "/api/work-orders": {
+      "get": {
+        "summary": "List work orders",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["open", "assigned", "in_progress", "completed", "closed"] } }
+        ],
+        "responses": {
+          "200": { "description": "List of work orders" }
+        }
+      }
+    },
+    "/api/work-orders/{id}": {
+      "get": {
+        "summary": "Get work order details with inspection & certificate",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Work order detail" }
+        }
+      }
+    },
+    "/api/work-orders/{id}/assign": {
+      "patch": {
+        "summary": "Assign engineer with gate-pass credential validation",
+        "security": [{ "cookieAuth": [] }],
+        "description": "Validates engineer's IQAMA, driving license, and car registration. Rejects assignment with 422 if any document is expired.",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["engineerId"],
+                "properties": {
+                  "engineerId": { "type": "string", "format": "uuid", "description": "(Compulsory) Engineer user UUID" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Engineer assigned successfully" },
+          "422": { "description": "Gate-pass check failed due to expired documents" }
+        }
+      }
+    },
+    "/api/work-orders/{id}/status": {
+      "patch": {
+        "summary": "Update work order status",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "enum": ["open", "assigned", "in_progress", "completed", "closed"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Status updated" }
+        }
+      }
+    },
+    "/api/work-orders/{id}/reopen": {
+      "patch": {
+        "summary": "Admin emergency reopen of work order for re-inspection",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Work order reopened" }
+        }
+      }
+    },
+    "/api/work-orders/{id}/checklist": {
+      "get": {
+        "summary": "Get checklist template for work order",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Checklist items" }
+        }
+      }
+    },
+    "/api/inspections": {
+      "post": {
+        "summary": "Submit field inspection checklist",
+        "security": [{ "cookieAuth": [] }],
+        "description": "Submits answers and equipment details. If ANY answer is 'no', server enforces 'unsafe' outcome.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["workOrderId", "answers", "equipment", "result"],
+                "properties": {
+                  "workOrderId": { "type": "string", "format": "uuid", "description": "(Compulsory) Work order UUID" },
+                  "checklistId": { "type": "string", "format": "uuid", "description": "(Optional) Checklist template UUID" },
+                  "answers": {
+                    "type": "object",
+                    "description": "(Compulsory) Map of checklist item keys to status (yes/no/na) and optional comment",
+                    "example": { "load_test": { "status": "yes" }, "sling_condition": { "status": "yes" } }
+                  },
+                  "equipment": {
+                    "type": "object",
+                    "required": ["manufacturer", "model", "serial"],
+                    "description": "(Compulsory) Equipment specifications",
+                    "properties": {
+                      "manufacturer": { "type": "string" },
+                      "model": { "type": "string" },
+                      "serial": { "type": "string" },
+                      "year": { "type": "integer" },
+                      "capacity": { "type": "string" }
+                    }
+                  },
+                  "result": { "type": "string", "enum": ["safe", "unsafe", "conditional"], "description": "(Compulsory) Inspection evaluation" },
+                  "photos": { "type": "array", "items": { "type": "string" }, "description": "(Optional) Uploaded photo URLs" },
+                  "notes": { "type": "string", "description": "(Optional) Engineer notes" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Inspection submitted" },
+          "409": { "description": "Inspection already submitted for this work order" },
+          "422": { "description": "Contradictory submission ('no' answers marked as safe)" }
+        }
+      }
+    },
+    "/api/inspections/{id}/assign": {
+      "patch": {
+        "summary": "Assign engineer to inspection work order (Route Alias)",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "description": "Alias for /api/work-orders/{id}/assign. Validates engineer credentials and enforces gate-pass compliance.",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "(Compulsory) Work order UUID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["engineerId"],
+                "properties": {
+                  "engineerId": { "type": "string", "format": "uuid", "description": "(Compulsory) Certified engineer user UUID" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Engineer assigned successfully" },
+          "422": { "description": "Gate-pass denial due to expired credentials" },
+          "404": { "description": "Work order or engineer not found" }
+        }
+      }
+    },
+    "/api/certificates": {
+      "get": {
+        "summary": "List certificates",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "List of certificates" }
+        }
+      },
+      "post": {
+        "summary": "Issue official certificate with QR and PDF",
+        "security": [{ "cookieAuth": [] }],
+        "description": "Requires 'safe' inspection result. Issues CERT-YYYY-XXXXXX, signs QR JWT token, and builds PDF.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["workOrderId", "certificateType"],
+                "properties": {
+                  "workOrderId": { "type": "string", "format": "uuid", "description": "(Compulsory) Work order UUID" },
+                  "certificateType": { "type": "string", "enum": ["safety_compliance", "operational_efficiency", "environmental_conformance", "quality_assurance"], "description": "(Compulsory) Certificate regulatory category" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Certificate issued" },
+          "409": { "description": "Duplicate certificate already issued today for this equipment" },
+          "422": { "description": "Inspection result was not safe" }
+        }
+      }
+    },
+    "/api/certificates/{id}/revoke": {
+      "post": {
+        "summary": "Revoke certificate",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                  "reason": { "type": "string", "description": "(Compulsory) Revocation rationale", "example": "Equipment damaged post-inspection." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Certificate revoked" },
+          "409": { "description": "Certificate was already revoked" }
+        }
+      }
+    },
+    "/api/certificates/{id}/pdf": {
+      "get": {
+        "summary": "Stream certificate PDF",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "PDF binary stream" }
+        }
+      }
+    },
+    "/api/certificates/{id}/qr.png": {
+      "get": {
+        "summary": "Stream certificate QR PNG image",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "PNG image stream" }
+        }
+      }
+    },
+    "/api/verify/{token}": {
+      "get": {
+        "summary": "Public QR code certificate verification",
+        "description": "Cryptographically verifies signed JWT from QR code and reads live status from database. Anti-enumeration: invalid and unknown tokens return identical 404 response.",
+        "parameters": [
+          { "name": "token", "in": "path", "required": true, "schema": { "type": "string" }, "description": "(Compulsory) Signed JWT verification token" }
+        ],
+        "responses": {
+          "200": { "description": "Live certificate status (Valid, Expired, Revoked) and equipment details" },
+          "404": { "description": "Certificate could not be verified" }
+        }
+      }
+    },
+    "/api/documents": {
+      "get": {
+        "summary": "List documents",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "category", "in": "query", "required": false, "schema": { "type": "string", "enum": ["company", "engineer"] } },
+          { "name": "expiringInDays", "in": "query", "required": false, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "List of documents" }
+        }
+      },
+      "post": {
+        "summary": "Upload new document",
+        "security": [{ "cookieAuth": [] }],
+        "description": "Multipart form upload with magic-byte validation and past-expiry check.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file", "category", "documentType", "displayName"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary", "description": "(Compulsory) Document file" },
+                  "category": { "type": "string", "enum": ["company", "engineer"], "description": "(Compulsory) Document category" },
+                  "documentType": { "type": "string", "description": "(Compulsory) Code (e.g. IQAMA, CR, VAT_CERTIFICATE)" },
+                  "displayName": { "type": "string", "description": "(Compulsory) Human-readable name" },
+                  "expiryDate": { "type": "string", "format": "date", "description": "(Optional) Expiration date" },
+                  "ownerUserId": { "type": "string", "format": "uuid", "description": "(Optional) Required for engineer documents" },
+                  "allowPastExpiry": { "type": "boolean", "description": "(Optional) Admin override for past expiry" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Document uploaded" },
+          "422": { "description": "Empty file, past expiry, or disallowed executable/script" }
+        }
+      }
+    },
+    "/api/documents/{id}/versions": {
+      "post": {
+        "summary": "Upload new version of existing document",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Version uploaded" }
+        }
+      }
+    },
+    "/api/documents/{id}": {
+      "delete": {
+        "summary": "Soft delete / archive document",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": { "description": "Document archived" },
+          "409": { "description": "Blocked: Engineer is assigned to active work orders" }
+        }
+      }
+    },
+    "/api/notifications/run-expiry-scan": {
+      "post": {
+        "summary": "Execute automated expiration scan",
+        "security": [{ "cookieAuth": [] }],
+        "description": "Admin endpoint scanning 30d, 7d, 1d, and expired documents/certificates. Deduplicated via ON CONFLICT DO NOTHING.",
+        "responses": {
+          "200": { "description": "Scan summary (scanned, notified, deduped)" }
+        }
+      }
+    },
+    "/api/notifications/logs": {
+      "get": {
+        "summary": "Get notification dispatch logs",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "List of notification logs" }
+        }
+      }
+    },
+    "/api/reports/kpi": {
+      "get": {
+        "summary": "Get operational KPI indicators",
+        "security": [{ "cookieAuth": [] }],
+        "responses": {
+          "200": { "description": "KPI metrics" }
+        }
+      }
+    },
+    "/api/reports/by-engineer": {
+      "get": {
+        "summary": "Download engineer performance report (CSV, Excel, PDF, JSON)",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "description": "Aggregates completed, in progress, and total work order jobs per certified engineer. Supports tabular PDF rendering, Excel export, and streaming CSV.",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Output serialization format. Defaults to 'csv'.",
+            "schema": { "type": "string", "enum": ["csv", "excel", "pdf", "json"], "default": "csv" }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or after this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-01-01" }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or before this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-12-31" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Report file stream (CSV, Excel, or PDF) or JSON telemetry payload" }
+        }
+      }
+    },
+    "/api/reports/by-client": {
+      "get": {
+        "summary": "Download client revenue and billing audit report (CSV, Excel, PDF, JSON)",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "description": "Financial ledger reporting total billed, collected revenue (paid), and outstanding receivables per client organization with KSA VAT compliance.",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Output serialization format. Defaults to 'csv'.",
+            "schema": { "type": "string", "enum": ["csv", "excel", "pdf", "json"], "default": "csv" }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or after this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-01-01" }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or before this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-12-31" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Report file stream (CSV, Excel, or PDF) or JSON billing payload" }
+        }
+      }
+    },
+    "/api/reports/by-branch": {
+      "get": {
+        "summary": "Download branch / operational location workload report (CSV, Excel, PDF, JSON)",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "description": "Geographic workload reporting detailing total work orders, completed jobs, open jobs, and unique clients served across operational branch and inspection site locations.",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Output serialization format. Defaults to 'csv'.",
+            "schema": { "type": "string", "enum": ["csv", "excel", "pdf", "json"], "default": "csv" }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or after this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-01-01" }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or before this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-12-31" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Report file stream (CSV, Excel, or PDF) or JSON geographic workload payload" }
+        }
+      }
+    },
+    "/api/reports/by-category": {
+      "get": {
+        "summary": "Download equipment classification compliance report (CSV, Excel, PDF, JSON)",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "description": "Equipment category analytics for lifting equipment, petroleum tankers, heavy trailers, and industrial forklifts with safe/unsafe pass rates and issued certificate counts.",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Output serialization format. Defaults to 'csv'.",
+            "schema": { "type": "string", "enum": ["csv", "excel", "pdf", "json"], "default": "csv" }
+          },
+          {
+            "name": "startDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or after this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-01-01" }
+          },
+          {
+            "name": "endDate",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Filter records created on or before this date (ISO format YYYY-MM-DD).",
+            "schema": { "type": "string", "format": "date", "example": "2026-12-31" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Report file stream (CSV, Excel, or PDF) or JSON category compliance payload" }
+        }
+      }
+    },
+    "/api/reports/by-certificate-status": {
+      "get": {
+        "summary": "Get certificate breakdown by status",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "description": "Calculates active, expired, and revoked certificate totals for statutory dashboard monitoring.",
+        "responses": {
+          "200": { "description": "Breakdown metrics object" }
+        }
+      }
+    },
+    "/api/notifications/run-expiry-scan": {
+      "post": {
+        "summary": "Run automated statutory expiry scan routine",
+        "description": "Scans all active gate-pass credentials and accredited certificates across 30d, 7d, 1d, and expired intervals. Dispatches alerts with idempotency deduplication. Restricted to admin role.",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Summary of scanned, notified, and deduped records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "scanned": { "type": "integer", "description": "Total assets checked", "example": 12 },
+                    "notified": { "type": "integer", "description": "New alerts dispatched", "example": 3 },
+                    "deduped": { "type": "integer", "description": "Previously sent notifications skipped", "example": 0 },
+                    "message": { "type": "string", "example": "Expiry scan complete: 12 scanned, 3 notified, 0 deduped." }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Unauthorized - valid session required" },
+          "403": { "description": "Forbidden - admin role required" }
+        }
+      }
+    },
+    "/api/notifications/logs": {
+      "get": {
+        "summary": "List notification dispatch logs",
+        "description": "Retrieves audit log stream of statutory alert notifications dispatched to operators and clients.",
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "[Optional] Maximum number of notification records to retrieve (default 50, max 100).",
+            "schema": { "type": "integer", "default": 50, "example": 10 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Array of notification dispatch logs with template keys and delivery status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "logs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "format": "uuid" },
+                          "recipient_address": { "type": "string", "example": "admin@demo.local" },
+                          "channel": { "type": "string", "enum": ["console", "email", "sms", "whatsapp"] },
+                          "template_key": { "type": "string", "example": "certificate_expiry_alert" },
+                          "status": { "type": "string", "enum": ["sent", "queued", "failed"] },
+                          "context_jsonb": { "type": "object" },
+                          "created_at": { "type": "string", "format": "date-time" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit-logs": {
+      "get": {
+        "summary": "Get audit logs",
+        "security": [{ "cookieAuth": [] }],
+        "parameters": [
+          { "name": "entityType", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "from", "in": "query", "required": false, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "required": false, "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": {
+          "200": { "description": "List of recent audit entries" }
+        }
+      }
+    },
+    "/api/users": {
+      "get": {
+        "summary": "List tenant users and inspectors",
+        "description": "Lists all users and engineers belonging to the tenant, including credential compliance indicators and active assignment counts.",
+        "tags": ["Users"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "role", "in": "query", "required": false, "schema": { "type": "string", "enum": ["admin", "sales", "engineer", "finance"] } },
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["active", "disabled"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Array of user profiles with compliance metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "format": "uuid" },
+                          "name": { "type": "string", "example": "Eng. Tariq Al-Otaibi" },
+                          "email": { "type": "string", "example": "tariq@alliance-tpi.sa" },
+                          "role": { "type": "string", "example": "engineer" },
+                          "phone": { "type": "string", "example": "+966501234567" },
+                          "status": { "type": "string", "example": "active" },
+                          "has_expired_docs": { "type": "boolean", "example": false },
+                          "active_work_orders_count": { "type": "integer", "example": 2 }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Onboard new user or engineer",
+        "description": "Creates a new user or field engineer with hashed credentials. Newly created engineers are immediately available for Work Order assignment.",
+        "tags": ["Users"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "email"],
+                "properties": {
+                  "name": { "type": "string", "example": "Eng. Faisal Al-Zahrani" },
+                  "email": { "type": "string", "example": "f.zahrani@alliance-tpi.sa" },
+                  "password": { "type": "string", "example": "SecurePass@2026", "description": "Optional custom password; defaults to secure tenant standard if omitted" },
+                  "role": { "type": "string", "enum": ["engineer", "lead_auditor", "admin", "sales", "finance"], "default": "engineer" },
+                  "phone": { "type": "string", "example": "+966541239988" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "User created successfully" },
+          "400": { "description": "Validation failed" },
+          "409": { "description": "Email already registered" }
+        }
+      }
+    },
+    "/api/users/{id}/status": {
+      "patch": {
+        "summary": "Update user active/disabled status",
+        "tags": ["Users"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "enum": ["active", "disabled"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Status updated successfully" }
+        }
+      }
+    },
+    "/api/clients": {
+      "get": {
+        "summary": "List corporate clients",
+        "description": "Returns all registered client entities with aggregated operational and commercial metrics.",
+        "tags": ["Clients"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Array of corporate clients with totals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "clients": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string", "format": "uuid" },
+                          "name": { "type": "string", "example": "Saudi Aramco Logistics Contractor" },
+                          "contact_email": { "type": "string", "example": "procurement@aramco-logistics.sa" },
+                          "contact_phone": { "type": "string", "example": "+966 13 874 0111" },
+                          "city": { "type": "string", "example": "Ras Tanura" },
+                          "total_work_orders": { "type": "integer", "example": 3 },
+                          "active_work_orders": { "type": "integer", "example": 1 },
+                          "total_inspections": { "type": "integer", "example": 2 },
+                          "total_certificates": { "type": "integer", "example": 2 },
+                          "total_billed_sar": { "type": "number", "example": 21275.00 }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Register a new corporate client",
+        "tags": ["Clients"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "example": "Modern Petrochemical Industries Co." },
+                  "cr_number": { "type": "string", "example": "1010992834" },
+                  "vat_number": { "type": "string", "example": "31099283400003" },
+                  "contact_name": { "type": "string", "example": "Eng. Mansoor Al-Harbi" },
+                  "contact_email": { "type": "string", "example": "qa@modernpetro.sa" },
+                  "contact_phone": { "type": "string", "example": "+966 11 445 9922" },
+                  "address": { "type": "string", "example": "Second Industrial City, Sector 4" },
+                  "city": { "type": "string", "example": "Jubail" },
+                  "notes": { "type": "string", "example": "Refinery turnaround crane inspection requirements" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Client registered successfully" }
+        }
+      }
+    },
+    "/api/clients/{id}": {
+      "get": {
+        "summary": "Get Client 360° Dossier",
+        "description": "Returns full portfolio for a client: profile, all work orders, all inspections with checklist results, all certificates, and commercial billing history.",
+        "tags": ["Clients"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete client dossier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "client": { "type": "object" },
+                    "workOrders": { "type": "array", "items": { "type": "object" } },
+                    "inspections": { "type": "array", "items": { "type": "object" } },
+                    "certificates": { "type": "array", "items": { "type": "object" } },
+                    "invoices": { "type": "array", "items": { "type": "object" } },
+                    "proposals": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Client not found" }
+        }
+      }
+    },
+    "/api/invoices": {
+      "get": {
+        "summary": "List all commercial invoices",
+        "tags": ["Invoices"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "List of invoices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "invoices": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Generate Tax Invoice directly",
+        "description": "Creates an official ZATCA-compliant Tax Invoice directly for either an existing Corporate Client or an active Unconverted Lead. Automatically computes 15% VAT and records audit trail.",
+        "tags": ["Invoices"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["clientName", "subtotal"],
+                "properties": {
+                  "clientName": { "type": "string", "description": "(Compulsory) Name of corporate client or lead", "example": "Modern Petrochemical Industries" },
+                  "clientEmail": { "type": "string", "format": "email", "description": "(Optional) Client billing email address", "example": "finance@modernpetro.sa" },
+                  "clientPhone": { "type": "string", "description": "(Optional) Client contact phone number", "example": "+966 11 445 9922" },
+                  "subtotal": { "type": "number", "description": "(Compulsory) Subtotal amount in SAR excluding VAT", "example": 12500.00 },
+                  "description": { "type": "string", "description": "(Optional) Invoice scope or item description", "example": "Statutory Periodic Crane & Pressure Vessel Inspection" },
+                  "clientId": { "type": "string", "format": "uuid", "description": "(Optional) Reference UUID of the registered corporate client" },
+                  "leadId": { "type": "string", "format": "uuid", "description": "(Optional) Reference UUID of the active lead. If provided, the lead will be automatically marked as converted." }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Invoice created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string", "example": "Tax Invoice 'INV-001042' issued successfully." },
+                    "invoice": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/schemas/ErrorEnvelope" }
+        }
+      }
+    },
+    "/api/work-orders": {
+      "get": {
+        "summary": "List all work orders",
+        "tags": ["Work Orders"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string", "enum": ["open", "assigned", "in_progress", "completed", "closed"] }, "description": "(Optional) Filter by work order operational status" }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of work orders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workOrders": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create new industrial work order directly for client",
+        "description": "Generates a unique WO sequence, verifies gate-pass credentials if an engineer is assigned, and sets initial operational status.",
+        "tags": ["Work Orders"],
+        "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["clientName"],
+                "properties": {
+                  "clientName": { "type": "string", "description": "(Compulsory) Name of client entity or facility", "example": "Aramco Gas Plant Operations" },
+                  "clientEmail": { "type": "string", "format": "email", "description": "(Optional) Facility contact email", "example": "ops@aramco.sa" },
+                  "clientPhone": { "type": "string", "description": "(Optional) Site contact phone number", "example": "+966 13 874 0111" },
+                  "locationText": { "type": "string", "description": "(Optional) Physical inspection address / site coordinates", "example": "Hawiyah Gas Plant, Sector 3" },
+                  "serviceType": { "type": "string", "description": "(Optional) Service regime", "example": "Regulatory Conformance" },
+                  "inspectionCategory": { "type": "string", "enum": ["lifting", "ndt", "pressure_vessels", "scaffolding", "heavy_machinery", "electrical"], "description": "(Optional) Category of industrial equipment", "example": "lifting" },
+                  "scope": { "type": "string", "description": "(Optional) Detailed technical inspection scope", "example": "Comprehensive statutory 10-year load test and magnetic particle crack detection." },
+                  "dueDate": { "type": "string", "format": "date", "description": "(Optional) Target inspection due date", "example": "2026-11-15" },
+                  "assignedEngineerId": { "type": "string", "format": "uuid", "description": "(Optional) User UUID of field engineer to assign (must have active gate pass credentials)" },
+                  "certificateValidityDays": { "type": "integer", "description": "(Optional) Validity period of issued compliance certificate in days", "default": 365, "example": 365 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Work order created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string", "example": "Work Order 'WO-001089' created successfully." },
+                    "workOrder": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/schemas/ErrorEnvelope" },
+          "422": { "$ref": "#/components/schemas/ErrorEnvelope" }
+        }
+      }
+    }
+  }
+}
