@@ -7,13 +7,16 @@ const { Pool } = pg;
  * Global PostgreSQL client pool for executing queries against the invertio_demo database.
  * Configured using discrete default properties (host, port, database, user, password).
  */
+const useSsl = config.DB_SSL || config.DB_HOST.includes('supabase.com') || (config.DATABASE_URL && config.DATABASE_URL.includes('supabase.com'));
+
 export const pool = new Pool(
   config.DATABASE_URL
     ? {
         connectionString: config.DATABASE_URL,
+        ssl: useSsl ? { rejectUnauthorized: false } : undefined,
         max: 20,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
+        connectionTimeoutMillis: 10000,
       }
     : {
         host: config.DB_HOST,
@@ -21,9 +24,10 @@ export const pool = new Pool(
         database: config.DB_NAME,
         user: config.DB_USER,
         password: config.DB_PASSWORD,
+        ssl: useSsl ? { rejectUnauthorized: false } : undefined,
         max: 20,
         idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
+        connectionTimeoutMillis: 10000,
       }
 );
 

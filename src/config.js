@@ -20,6 +20,7 @@ const envSchema = z.object({
   DB_NAME: z.string().default('invertio_demo'),
   DB_USER: z.string().default('postgres'),
   DB_PASSWORD: z.string().default(''),
+  DB_SSL: z.coerce.boolean().default(false),
   DATABASE_URL: z.string().optional(),
 
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
