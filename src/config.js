@@ -11,7 +11,7 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().default(4000),
-  API_BASE_URL: z.string().default('http://localhost:4000'),
+  API_BASE_URL: z.string().default(process.env.RENDER_EXTERNAL_URL || 'http://localhost:4000'),
   WEB_BASE_URL: z.string().default('http://localhost:3000'),
 
   // Discrete Database Configuration
@@ -30,7 +30,10 @@ const envSchema = z.object({
   COOKIE_DOMAIN: z.string().default('localhost'),
   STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
   STORAGE_LOCAL_ROOT: z.string().default('./storage'),
-  PUBLIC_FILE_BASE_URL: z.string().default('http://localhost:4000/files'),
+  PUBLIC_FILE_BASE_URL: z.string().default(
+    process.env.PUBLIC_FILE_BASE_URL ||
+    (process.env.RENDER_EXTERNAL_URL ? `${process.env.RENDER_EXTERNAL_URL}/files` : 'http://localhost:4000/files')
+  ),
   QR_TOKEN_SECRET: z.string().min(32, 'QR_TOKEN_SECRET must be at least 32 characters'),
   QR_TOKEN_TTL_DAYS: z.coerce.number().default(365),
   MAIL_DRIVER: z.enum(['console', 'smtp']).default('console'),
